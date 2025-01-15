@@ -1,0 +1,230 @@
+set -e
+set +x
+
+LD_PRELOAD=
+
+DOCKER_HOME=~/docker
+if [[ ! -d $DOCKER_HOME ]]; then
+   DOCKER_HOME=$HOME/.proot-docker
+   mkdir -p $DOCKER_HOME
+fi
+
+PARAMS=$(shift; shift; echo $@;)
+
+cmd=$1
+
+arg2=$2
+img=${2/\:/-}
+img=${img/\//-}
+
+function check_img(){
+  if [[ -z $img ]];then
+        echo "Parameter missing <img>"
+        exit 0
+  fi
+}
+
+function check_container(){
+  if [[ -z $img ]];then
+        echo "Parameter missing <container> <proot_params>"
+        exit 0
+  fi
+}
+
+function check_skopeo(){
+
+  set +e
+  SKOPEO=$(command -v skopeo)
+  set -e
+  if [[ ! -x "$SKOPEO" ]]; then
+     if [[ ! -x $DOCKER_HOME/skopeo/usr/bin/skopeo ]]; then
+       echo "skopeo missing please install"
+       exit 0
+     fi 
+     SKOPEO="proot -r $DOCKER_HOME/skopeo skopeo"
+     SKOPEO_PROOT=true
+     LINK_PARAM="--link2symlink"
+  fi
+
+}
+
+function pull_image(){
+
+  check_img 
+
+  echo "Pulling image $img"
+
+  check_skopeo
+
+  if [[ ! -f $DOCKER_HOME/images/${img}.tar ]]; then
+    echo "Saving ${img}.tar"
+    if [[ ! -f $DOCKER_HOME/skopeo/${img}.tar ]]; then
+	   $SKOPEO copy docker://docker.io/$arg2 docker-archive:${img}.tar
+    fi
+    mkdir -p $DOCKER_HOME/images
+    if [[ "${SKOPEO_PROOT}" == "true" ]]; then
+       mv $DOCKER_HOME/skopeo/${img}.tar $DOCKER_HOME/images/
+    else
+       mv ${img}.tar $DOCKER_HOME/images/
+    fi
+  fi
+}
+
+function extract_image(){
+   check_container
+
+   container=$DOCKER_HOME/containers/$img
+
+   if [[ -d $container ]]; then
+       return
+   fi
+
+   cd $DOCKER_HOME
+
+   check_skopeo
+
+   set -e
+   set +x
+
+   rm -rf tmp
+
+   echo "Extracting image $img"
+
+   mkdir -p tmp
+
+   if [[ "$SKOPEO_PROOT" == "true" ]]; then
+
+      SKOPEO="proot -r $DOCKER_HOME/skopeo -b $DOCKER_HOME:/docker skopeo"
+      $SKOPEO copy docker-archive:/docker/images/$img.tar dir:/docker/tmp
+
+   else
+      $SKOPEO copy docker-archive:images/$img.tar dir:tmp
+   fi
+      
+   
+   cd tmp
+
+   cat manifest.json | jq '.layers|.[]|.digest' > layers.txt
+
+   sed -i 's/\"sha256://g' layers.txt
+
+   sed -i 's/\"//g' layers.txt
+
+   mkdir -p $DOCKER_HOME/containers
+   mkdir -p $container
+   cd $container
+   for layer in $(cat $DOCKER_HOME/tmp/layers.txt)
+   do
+      proot ${LINK_PARAM} tar -xvf $DOCKER_HOME/tmp/$layer
+   done
+
+   cd $DOCKER_HOME
+   rm -rf tmp
+   echo "Extracting image done."
+
+}
+
+
+function run_image(){
+
+  check_skopeo 
+
+  container=$DOCKER_HOME/containers/$img
+  check_container
+
+  if [[ ! -d $container ]]; then
+       echo "The container you are trying to run $img, does not exist"
+       exit 0
+  fi
+
+  echo "Starting container $img"
+  proot ${LINK_PARAM} -b /dev:/dev -b /proc:/proc -b /sys:/sys -r $container $PARAMS
+}
+
+function remove_container(){
+ check_container
+ container=$DOCKER_HOME/containers/$img
+ if [[ ! -d $container ]]; then
+   echo "Specified container $img does not exist"
+   exit 0
+ fi
+ rm -rf $container 
+ echo "Removed container $img"
+}
+
+function remove_image(){
+ check_img
+ image=$DOCKER_HOME/images/${img}.tar
+ container=$DOCKER_HOME/containers/$img 
+
+ if [[ -d $container ]]; then
+    echo "Container $img exists, delete container first"
+    exit 0
+ fi
+
+ if [[ ! -f $image ]]; then
+    echo "Specified image $img does not exist"
+    exit 0
+ fi 
+
+ rm -rf $image
+ echo "Removed image $img"
+}
+
+function list_containers(){
+ ls $DOCKER_HOME/containers 
+}
+
+function list_images(){
+ ls $DOCKER_HOME/images 
+}
+
+function usage(){
+  echo "proot-docker - Docker containers using proot"
+  echo "Available commands"
+  echo "  run"
+  echo "  pull"
+  echo "  ps"
+  echo "  rm"
+  echo "  images" 
+  echo "  help"
+}
+
+function help(){
+	
+  if [[ $arg2 == "rm" ]]; then
+     echo "rm <containername> - Remove container"
+  elif [[ $arg2 == "ps" ]]; then
+     echo "ps - show containers"
+  elif [[ $arg2 == "run" ]]; then
+     echo "run <containername> <proot params> - Run containers optinally specifying proot params"
+  elif [[ $arg2 == "pull" ]]; then
+     echo "pull - Pull docker image"
+  elif [[ $arg2 == "images" ]]; then
+     echo "images - List images"
+  elif [[ $arg2 == "rmi" ]]; then
+     echo "rmi <imagename> - Remove image"
+  else
+     usage
+  fi	
+
+}
+
+if [[ "$cmd" == "rm" ]]; then
+   remove_container
+elif [[ "$cmd" == "rmi" ]]; then
+   remove_image
+elif [[ "$cmd" == "images" ]]; then
+   list_images
+elif [[ "$cmd" == "ps" ]]; then
+   list_containers
+elif [[ "$cmd" == "pull" ]]; then
+   pull_image
+elif [[ "$cmd" == "run" ]]; then
+   extract_image
+   run_image
+elif [[ "$cmd" == "help" ]]; then
+   help
+else
+   usage
+fi
