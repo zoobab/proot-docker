@@ -1,7 +1,10 @@
+#!/bin/bash
 set -e
 set +x
 
 LD_PRELOAD=
+
+LOCAL_DIR=$(pwd)
 
 DOCKER_HOME=~/docker
 if [[ ! -d $DOCKER_HOME ]]; then
@@ -95,10 +98,10 @@ function extract_image(){
    if [[ "$SKOPEO_PROOT" == "true" ]]; then
 
       SKOPEO="proot -r $DOCKER_HOME/skopeo -b $DOCKER_HOME:/docker skopeo"
-      $SKOPEO copy docker-archive:/docker/images/$img.tar dir:/docker/tmp
+      $SKOPEO copy -q docker-archive:/docker/images/$img.tar dir:/docker/tmp
 
    else
-      $SKOPEO copy docker-archive:images/$img.tar dir:tmp
+      $SKOPEO copy -q docker-archive:images/$img.tar dir:tmp
    fi
       
    
@@ -115,7 +118,7 @@ function extract_image(){
    cd $container
    for layer in $(cat $DOCKER_HOME/tmp/layers.txt)
    do
-      proot ${LINK_PARAM} tar -xvf $DOCKER_HOME/tmp/$layer
+      proot ${LINK_PARAM} tar -xf $DOCKER_HOME/tmp/$layer
    done
 
    cd $DOCKER_HOME
@@ -137,8 +140,8 @@ function run_image(){
        exit 0
   fi
 
-  echo "Starting container $img"
-  proot ${LINK_PARAM} -b /dev:/dev -b /proc:/proc -b /sys:/sys -r $container $PARAMS
+#  echo "Starting container $img"
+proot ${LINK_PARAM} -0 -w / -b $LOCAL_DIR/resolv.conf:/etc/resolv.conf -b /dev:/dev -b /proc:/proc -b /sys:/sys -r $container $PARAMS
 }
 
 function remove_container(){
